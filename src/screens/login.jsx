@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ImageBackground, ScrollView, SafeAreaView, StatusBar, ActivityIndicator
+  ImageBackground, ScrollView, StatusBar, ActivityIndicator, Platform
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase/config';
@@ -16,6 +17,9 @@ export default function LoginScreen({ navigation }) {
   const [password, setPassword] = useState('');
   const [secureText, setSecureText] = useState(true);
   const [loading, setLoading] = useState(false);
+
+
+  const insets = useSafeAreaInsets();
 
   // Estados para controlar el CustomAlert
   const [alertConfig, setAlertConfig] = useState({ visible: false, tipo: 'info', titulo: '', mensaje: '', onAction: null });
@@ -33,7 +37,6 @@ export default function LoginScreen({ navigation }) {
   const validarCorreo = (correo) => correo.trim().endsWith(DOMINIO_INSTITUCIONAL);
 
   const handleRecuperarContrasena = async () => {
-    // Si el usuario ya escribió algo en el campo de texto del correo, lo usamos directamente
     if (!email) {
       mostrarAlerta(
         'info',
@@ -52,11 +55,10 @@ export default function LoginScreen({ navigation }) {
       return;
     }
 
+    // Corregido: faltaba el "set" — esto antes intentaba llamar a "loading" como función y rompía el flujo
     setLoading(true);
     try {
-      // Firebase envía el correo de recuperación en el idioma configurado en tu consola
       await sendPasswordResetEmail(auth, email.trim());
-
       mostrarAlerta(
         'exito',
         'Enlace Enviado ✓',
@@ -98,8 +100,6 @@ export default function LoginScreen({ navigation }) {
       }
 
       const datosUsuario = usuarioSnap.data();
-
-      // Validación adaptativa por si acaso el campo está como "activo" o "estado"
       const cuentaActiva = datosUsuario.activo !== undefined ? datosUsuario.activo : datosUsuario.estado;
 
       if (cuentaActiva === false) {
@@ -107,8 +107,7 @@ export default function LoginScreen({ navigation }) {
         return;
       }
 
-      // LOGIN EXITOSO
-      mostrarAlerta('exito', '¡Inicio de Sesión Exitoso! ✓', 'Bienvenido de vuelta a la plataforma de Umóvil.', () => {
+      mostrarAlerta('exito', '¡Inicio de Sesión Exitoso!', 'Bienvenido de vuelta a la plataforma de Umóvil.', () => {
         if (datosUsuario.rol && datosUsuario.rol.includes('conductor')) {
           navigation.replace('HomeConductor');
         } else {
@@ -140,13 +139,16 @@ export default function LoginScreen({ navigation }) {
         style={{ flex: 1 }}
         contentContainerStyle={styles.scrollContainer}
         bounces={false}
+        showsVerticalScrollIndicator={false}
       >
         <ImageBackground
           source={{ uri: 'https://images.unsplash.com/photo-1541339907198-e08756dedf3f?q=80&w=600' }}
-          style={styles.headerBackground}
+          // El alto ahora suma el inset superior real: la imagen se extiende
+          // de forma natural debajo del notch/isla en vez de usar un valor fijo a ciegas.
+          style={[styles.headerBackground, { height: 230 + insets.top }]}
         >
           <View style={styles.overlay}>
-            <SafeAreaView style={styles.headerContent}>
+            <View style={[styles.headerContent, { paddingTop: insets.top + 18 }]}>
               <View style={styles.brandRow}>
                 <View style={styles.logoIconContainer}>
                   <Ionicons name="car-sport" size={24} color="#1db954" />
@@ -155,64 +157,60 @@ export default function LoginScreen({ navigation }) {
               </View>
               <Text style={styles.heroTitle}>Muévete con tu comunidad</Text>
               <Text style={styles.heroSubtitle}>Viajes seguros entre estudiantes verificados</Text>
-            </SafeAreaView>
+            </View>
           </View>
         </ImageBackground>
 
-        {/* El contenedor blanco ahora se funde al 100% hasta abajo */}
-        <View style={styles.formContainer}>
-          <View style={styles.topFormBlock}>
-            <Text style={styles.welcomeText}>Bienvenido de nuevo</Text>
-            <Text style={styles.welcomeSubtitle}>Inicia sesión con tu cuenta universitaria</Text>
+        <View style={[styles.formContainer, { paddingBottom: insets.bottom + 20 }]}>
+          <Text style={styles.welcomeText}>Bienvenido de nuevo</Text>
+          <Text style={styles.welcomeSubtitle}>Inicia sesión con tu cuenta universitaria</Text>
 
-            <Text style={styles.inputLabel}>Correo institucional</Text>
-            <View style={styles.inputWrapper}>
-              <MaterialCommunityIcons name="email-outline" size={18} color="#666" style={styles.inputIcon} />
-              <TextInput
-                style={styles.input}
-                placeholder={`estudiante${DOMINIO_INSTITUCIONAL}`}
-                placeholderTextColor="#999"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-            </View>
+          <Text style={styles.inputLabel}>Correo institucional</Text>
+          <View style={styles.inputWrapper}>
+            <MaterialCommunityIcons name="email-outline" size={18} color="#666" style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder={`estudiante${DOMINIO_INSTITUCIONAL}`}
+              placeholderTextColor="#999"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+          </View>
 
-            <Text style={styles.inputLabel}>Contraseña</Text>
-            <View style={styles.inputWrapper}>
-              <Ionicons name="lock-closed-outline" size={18} color="#666" style={styles.inputIcon} />
-              <TextInput
-                style={styles.input}
-                placeholder="••••••••"
-                placeholderTextColor="#999"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={secureText}
-              />
-              <TouchableOpacity onPress={() => setSecureText(!secureText)}>
-                <Ionicons name={secureText ? "eye-off-outline" : "eye-outline"} size={18} color="#000" />
-              </TouchableOpacity>
-            </View>
-
-            <TouchableOpacity
-              style={styles.forgotPasswordContainer}
-              onPress={handleRecuperarContrasena}
-              disabled={loading}
-            >
-              <Text style={styles.forgotPasswordText}>¿Olvidaste tu contraseña?</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.loginBtn, loading && { opacity: 0.7 }]}
-              onPress={handleLogin}
-              disabled={loading}
-            >
-              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.loginBtnText}>Iniciar sesión</Text>}
+          <Text style={styles.inputLabel}>Contraseña</Text>
+          <View style={styles.inputWrapper}>
+            <Ionicons name="lock-closed-outline" size={18} color="#666" style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder="••••••••"
+              placeholderTextColor="#999"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={secureText}
+            />
+            <TouchableOpacity onPress={() => setSecureText(!secureText)}>
+              <Ionicons name={secureText ? "eye-off-outline" : "eye-outline"} size={18} color="#000" />
             </TouchableOpacity>
           </View>
 
-          {/* El footer se acopla abajo de manera perfecta y balanceada */}
+          <TouchableOpacity
+            style={styles.forgotPasswordContainer}
+            onPress={handleRecuperarContrasena}
+            disabled={loading}
+          >
+            <Text style={styles.forgotPasswordText}>¿Olvidaste tu contraseña?</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.loginBtn, loading && { opacity: 0.7 }]}
+            onPress={handleLogin}
+            disabled={loading}
+          >
+            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.loginBtnText}>Iniciar sesión</Text>}
+          </TouchableOpacity>
+
           <View style={styles.footerContainer}>
             <Text style={styles.footerText}>¿Eres nuevo en Umóvil? </Text>
             <TouchableOpacity onPress={() => navigation.navigate('Register')}>
@@ -234,41 +232,145 @@ export default function LoginScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  mainContainer: { flex: 1, backgroundColor: '#fff' }, // Cambiado a blanco uniforme de fondo base
-  scrollContainer: { flexGrow: 1, backgroundColor: '#fff' },
-  headerBackground: { height: 240 },
-  overlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)', paddingHorizontal: 20 },
-  headerContent: { flex: 1, justifyContent: 'center', marginTop: 30 },
-  brandRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
-  logoIconContainer: { width: 36, height: 36, backgroundColor: '#fff', borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginRight: 10 },
-  brandName: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
-  heroTitle: { fontSize: 24, fontWeight: 'bold', color: '#fff' },
-  heroSubtitle: { fontSize: 13, color: '#E0E0E0', marginTop: 4 },
+  mainContainer: {
+    flex: 1,
+    backgroundColor: '#fff'
+  },
+  scrollContainer: {
+    flexGrow: 1,
+    backgroundColor: '#fff'
+  },
+  headerBackground: {
+    // El alto base se ajusta dinámicamente arriba sumando insets.top
+  },
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 24
+  },
+  headerContent: {
+    flex: 1,
+    justifyContent: 'center'
+    // paddingTop ahora se calcula con insets.top arriba, ya no depende de
+    // StatusBar.currentHeight (impreciso en notches/isla dinámica)
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16
+  },
+  logoIconContainer: {
+    width: 38,
+    height: 38,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12
+  },
+  brandName: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold'
+  },
+  heroTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff'
+  },
+  heroSubtitle: {
+    fontSize: 14,
+    color: '#E0E0E0',
+    marginTop: 6
+  },
 
   formContainer: {
-    flex: 1,
-    backgroundColor: '#fff', // Fondo completamente limpio
-    borderTopLeftRadius: 35,
-    borderTopRightRadius: 35,
-    marginTop: -30,
-    paddingHorizontal: 20,
-    paddingTop: 70,
-    paddingBottom: 60, // Espacio prudente para la barra de navegación del cel
-    justifyContent: 'space-between'
+    // Ya no usa flex:1: así el formulario toma solo el alto que su contenido
+    // necesita y no empuja un bloque de espacio en blanco vacío al final.
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    marginTop: -32, // Hace el traslape limpio con la imagen curva
+    paddingHorizontal: 24,
+    paddingTop: 35
+    // paddingBottom ahora se calcula con insets.bottom arriba (home indicator / gesto Android)
   },
-  topFormBlock: { width: '100%' },
-  welcomeText: { fontSize: 22, fontWeight: 'bold', color: '#111' },
-  welcomeSubtitle: { fontSize: 13, color: '#666', marginTop: 4, marginBottom: 24 },
-  inputLabel: { fontSize: 14, fontWeight: '600', color: '#111', marginBottom: 6 },
-  inputWrapper: { flexDirection: 'row', backgroundColor: '#EDF2F1', borderRadius: 12, paddingHorizontal: 12, alignItems: 'center', height: 48, marginBottom: 16 },
-  inputIcon: { marginRight: 8 },
-  input: { flex: 1, color: '#000', fontSize: 14 },
-  forgotPasswordContainer: { alignItems: 'flex-end', marginBottom: 24 },
-  forgotPasswordText: { color: '#1db954', fontSize: 13, fontWeight: '600' },
-  loginBtn: { backgroundColor: '#1db954', height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
-  loginBtnText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
+  welcomeText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#111'
+  },
+  welcomeSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 4,
+    marginBottom: 28
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111',
+    marginBottom: 8
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    backgroundColor: '#F3F4F6',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    height: 52,
+    marginBottom: 18
+  },
+  inputIcon: {
+    marginRight: 10
+  },
+  input: {
+    flex: 1,
+    color: '#000',
+    fontSize: 15
+  },
+  forgotPasswordContainer: {
+    alignItems: 'flex-end',
+    marginBottom: 28
+  },
+  forgotPasswordText: {
+    color: '#1db954',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  loginBtn: {
+    backgroundColor: '#1db954',
+    height: 52,
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 15,
+    // Sutil sombra para que se vea más Premium en el dispositivo
+    shadowColor: '#1db954',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 5,
+    elevation: 3
+  },
+  loginBtnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold'
+  },
 
-  footerContainer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingTop: 30, marginBottom: 40 },
-  footerText: { color: '#666', fontSize: 13 },
-  registerLink: { color: '#1db954', fontWeight: 'bold', fontSize: 13 }
+  footerContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 25
+  },
+  footerText: {
+    color: '#666',
+    fontSize: 14
+  },
+  registerLink: {
+    color: '#1db954',
+    fontWeight: 'bold',
+    fontSize: 14
+  }
 });

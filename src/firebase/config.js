@@ -1,6 +1,7 @@
-import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { initializeAuth, getReactNativePersistence, getAuth } from "firebase/auth";
+import { initializeFirestore } from "firebase/firestore";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const firebaseConfig = {
   apiKey: "AIzaSyDKwMsOOgYo-WsHTWESW-3GUkAGdKsCOBQ",
@@ -12,12 +13,22 @@ const firebaseConfig = {
   measurementId: "G-L9041V55WH"
 };
 
-// 1. Inicializar la App de Firebase
-const app = initializeApp(firebaseConfig);
+// 1. Inicializar la App evitando duplicados en Expo
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-// 2. Inicializar los servicios que sí usa tu Login
-const auth = getAuth(app);
-const db = getFirestore(app);
+// 2. Inicializar Auth de forma robusta con Persistencia Nativa
+let auth;
+if (getApps().length === 0) {
+  auth = initializeAuth(app, {
+    persistence: getReactNativePersistence(AsyncStorage),
+  });
+} else {
+  auth = getAuth(app);
+}
 
-// 3. ¡SÚPER IMPORTANTE! Exportar los servicios para que LoginScreen los pueda leer
-export { auth, db };
+// 3. Inicializar Firestore
+const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true, 
+});
+
+export { app, auth, db };

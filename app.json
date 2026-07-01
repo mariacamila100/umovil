@@ -24,6 +24,14 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+  [
+    "expo-location",
+    {
+      "locationWhenInUsePermission": "Umóvil necesita acceder a tu ubicación para encontrar conductores cerca."
     }
+  ]
+]
   }
 }
