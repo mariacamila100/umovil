@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList,
-  ActivityIndicator, Platform, Keyboard, ScrollView
+  ActivityIndicator, Platform, Keyboard, ScrollView, Alert, Image
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5, Octicons, Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -44,18 +44,52 @@ export default function BuscarViaje({ navigation }) {
   const [buscandoSugerencias, setBuscandoSugerencias] = useState(false);
   const [creandoSolicitud, setCreandoSolicitud] = useState(false);
   const debounceRef = useRef(null);
+  const viajeConfirmadoRef = useRef(false);
 
-  const [alertConfig, setAlertConfig] = useState({ visible: false, tipo: 'info', titulo: '', mensaje: '', onAction: null });
+  const [alertConfig, setAlertConfig] = useState({ 
+    visible: false, 
+    tipo: 'info', 
+    titulo: '', 
+    mensaje: '', 
+    onAction: null,
+    onConfirm: null,
+    confirmText: '',
+    cancelText: ''
+  });
+  const [tick, setTick] = useState(0);
 
   const mostrarAlerta = (tipo, titulo, mensaje, onAction = null) => {
-    setAlertConfig({ visible: true, tipo, titulo, mensaje, onAction });
+    setAlertConfig({ 
+      visible: true, 
+      tipo, 
+      titulo, 
+      mensaje, 
+      onAction,
+      onConfirm: null,
+      confirmText: '',
+      cancelText: ''
+    });
   };
 
   const cerrarAlerta = () => {
     const action = alertConfig.onAction;
-    setAlertConfig({ ...alertConfig, visible: false });
+    setAlertConfig((prev) => ({ 
+      ...prev, 
+      visible: false,
+      onConfirm: null,
+      confirmText: '',
+      cancelText: ''
+    }));
     if (action) action();
   };
+
+  useEffect(() => {
+    if (!solicitudId) return;
+    const interval = setInterval(() => {
+      setTick((t) => t + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [solicitudId]);
 
   useEffect(() => {
     const obtenerUbicacion = async () => {
@@ -83,10 +117,7 @@ export default function BuscarViaje({ navigation }) {
     obtenerUbicacion();
   }, []);
 
-  // 🔧 CORREGIDO: antes esto usaba "viajeRef.id", que no existe en este scope y
-  // rompía la app justo cuando un conductor aceptaba. Ahora usa data.viaje_id,
-  // que sí viene en el propio documento de la Solicitud. Este es el único lugar
-  // que dispara la confirmación (ya no se duplica con aceptarOfertaConductor).
+
   useEffect(() => {
     if (!solicitudId) return;
 
@@ -95,8 +126,9 @@ export default function BuscarViaje({ navigation }) {
         const data = docSnap.data();
 
         if (data.estado === 'aceptado' && data.viaje_id) {
+          viajeConfirmadoRef.current = true; // Evitar que la navegación de salida dispare el interceptor
           mostrarAlerta('exito', '¡Viaje Confirmado!', 'Ponte en contacto con tu conductor.', () => {
-            navigation.navigate('MisViajes');
+            navigation.replace('ViajeEnCurso', { viajeId: data.viaje_id });
           });
         }
 
@@ -112,6 +144,48 @@ export default function BuscarViaje({ navigation }) {
 
     return () => unsub();
   }, [solicitudId]);
+
+  // Prevenir retorno accidental durante la búsqueda activa
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (viajeConfirmadoRef.current) {
+        // Si el viaje ya fue confirmado, permitir salir libremente
+        return;
+      }
+
+      if (!solicitudId) {
+        // Si no hay búsqueda activa, se permite salir normalmente
+        return;
+      }
+
+      // Prevenir el retroceso por defecto (Android back button, iOS swipe back, etc.)
+      e.preventDefault();
+
+      setAlertConfig({
+        visible: true,
+        tipo: 'info',
+        titulo: '¿Cancelar búsqueda?',
+        mensaje: 'Si sales de esta pantalla se cancelará tu búsqueda de viaje activa.',
+        onConfirm: async () => {
+          setAlertConfig((prev) => ({ ...prev, visible: false, onConfirm: null }));
+          try {
+            // Cancelar la solicitud en Firestore
+            await updateDoc(doc(db, 'Solicitud', solicitudId), {
+              estado: 'cancelado'
+            });
+          } catch (err) {
+            console.error("Error al cancelar la solicitud al salir:", err);
+          }
+          // Proceder a retirar la pantalla de la navegación
+          navigation.dispatch(e.data.action);
+        },
+        confirmText: 'Sí, salir',
+        cancelText: 'Seguir esperando'
+      });
+    });
+
+    return unsubscribe;
+  }, [navigation, solicitudId]);
 
   // --- Buscador Inteligente Nominatim unificado para ambos campos ---
   const buscarDireccion = (texto, tipo) => {
@@ -222,6 +296,11 @@ export default function BuscarViaje({ navigation }) {
     }
   };
 
+  // CAMBIO NECESARIO EN BuscarViaje.jsx
+  // Reemplaza tu función aceptarOfertaConductor por esta versión.
+  // Lo único que cambia es que ahora se guardan origen_coords y destino_coords
+  // en el documento de 'Viajes', para que ViajeEnCurso.jsx pueda dibujar el mapa.
+
   const aceptarOfertaConductor = async (ofertaConductor) => {
     try {
       const viajeRef = await addDoc(collection(db, 'Viajes'), {
@@ -230,7 +309,9 @@ export default function BuscarViaje({ navigation }) {
         pasajero_id: auth.currentUser?.uid || '8I4Pg2jiYlZ1RuRhRbHQ0xZ1Lrj2',
         vehiculo_id: ofertaConductor.vehiculo_id || '',
         origen_nombre: origen.nombre,
+        origen_coords: { latitude: origen.latitude, longitude: origen.longitude }, // ⬅️ nuevo
         destino_nombre: destino.nombre,
+        destino_coords: { latitude: destino.latitude, longitude: destino.longitude }, // ⬅️ nuevo
         precio_final: ofertaConductor.precio_contraoferta,
         estado: 'en_curso',
         fecha_hora: serverTimestamp(),
@@ -241,17 +322,36 @@ export default function BuscarViaje({ navigation }) {
         estado: 'aceptado',
         viaje_id: viajeRef.id
       });
-
-      // La confirmación (alerta + navegación) la dispara el listener onSnapshot de arriba
-      // en cuanto detecta estado:'aceptado', así evitamos mostrarla dos veces.
     } catch (error) {
       console.error('Error al aceptar la oferta:', error);
       mostrarAlerta('error', 'Error', 'No se pudo procesar la confirmación del viaje.');
     }
   };
 
+  const rechazarOferta = async (ofertaConductor) => {
+    if (!solicitudId) return;
+    try {
+      const solicitudRef = doc(db, 'Solicitud', solicitudId);
+      const actualizacion = {};
+      actualizacion[`ofertas_conductores.${ofertaConductor.uid}.estado_oferta`] = 'rechazada';
+      actualizacion[`ofertas_conductores.${ofertaConductor.uid}.timestamp_rechazo`] = Date.now();
+      await updateDoc(solicitudRef, actualizacion);
+    } catch (error) {
+      console.error('Error al rechazar la oferta:', error);
+      mostrarAlerta('error', 'Error', 'No se pudo rechazar la oferta del conductor.');
+    }
+  };
+
+  const TIEMPO_EXPIRACION_MS = 45000;
+  const ofertasFiltradas = ofertas.filter((item) => {
+    const tiempoPasado = Date.now() - (item.timestamp_oferta || 0);
+    const esExpirada = tiempoPasado > TIEMPO_EXPIRACION_MS;
+    const esRechazada = item.estado_oferta === 'rechazada';
+    return !esRechazada && !esExpirada;
+  });
+
   // Ordenamos por precio (más barato primero) y marcamos la primera como "mejor opción"
-  const ofertasOrdenadas = [...ofertas].sort(
+  const ofertasOrdenadas = [...ofertasFiltradas].sort(
     (a, b) => (a.precio_contraoferta || 0) - (b.precio_contraoferta || 0)
   );
 
@@ -259,7 +359,7 @@ export default function BuscarViaje({ navigation }) {
     <View style={styles.mainContainer}>
       <View style={[styles.headerContainer, { paddingTop: insets.top + 10 }]}>
         <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={20} color="#000" />
+          <Ionicons name="arrow-back" size={20} color="#111" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Buscar un viaje</Text>
       </View>
@@ -383,9 +483,37 @@ export default function BuscarViaje({ navigation }) {
 
       {solicitudId && (
         <View style={styles.ofertasPanel}>
+          {/* Chips de filtros estilo mockup de foto */}
+          <View style={styles.filterChipsRow}>
+            <TouchableOpacity style={[styles.filterChip, styles.filterChipActive]} activeOpacity={0.8}>
+              <Ionicons name="calendar" size={14} color="#fff" style={{ marginRight: 5 }} />
+              <Text style={[styles.filterChipText, styles.filterChipTextActive]}>Ahora</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.filterChip} activeOpacity={0.8}>
+              <Ionicons name="car" size={14} color="#556B63" style={{ marginRight: 5 }} />
+              <Text style={styles.filterChipText}>Carro</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.filterChip} activeOpacity={0.8}>
+              <Ionicons name="star" size={14} color="#556B63" style={{ marginRight: 5 }} />
+              <Text style={styles.filterChipText}>4.5+</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.filterChip} activeOpacity={0.8}>
+              <Ionicons name="people" size={14} color="#556B63" style={{ marginRight: 5 }} />
+              <Text style={styles.filterChipText}>1 cupo</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.dividerLine} />
+
+          {/* Fila del encabezado de la lista */}
           <View style={styles.ofertasHeaderRow}>
-            <Text style={styles.listHeaderText}>{ofertas.length} conductor{ofertas.length !== 1 ? 'es' : ''} disponible{ofertas.length !== 1 ? 's' : ''}</Text>
-            {ofertas.length > 1 && <Text style={styles.ofertasSubHeader}>Menor precio primero</Text>}
+            <Text style={styles.listHeaderText}>
+              {ofertasOrdenadas.length} conductor{ofertasOrdenadas.length !== 1 ? 'es' : ''} disponible{ofertasOrdenadas.length !== 1 ? 's' : ''}
+            </Text>
+            <TouchableOpacity style={styles.ordenarCercaniaBtn} activeOpacity={0.7}>
+              <Ionicons name="location-sharp" size={13} color="#7A8B85" style={{ marginRight: 4 }} />
+              <Text style={styles.ofertasSubHeader}>Ordenar por cercanía</Text>
+            </TouchableOpacity>
           </View>
 
           <FlatList
@@ -401,8 +529,15 @@ export default function BuscarViaje({ navigation }) {
             }
             renderItem={({ item, index }) => {
               const esMejorOferta = index === 0 && ofertasOrdenadas.length > 1;
+              const segundosRestantes = Math.max(0, 45 - Math.floor((Date.now() - (item.timestamp_oferta || Date.now())) / 1000));
+
               return (
                 <View style={[styles.viajeCard, esMejorOferta && styles.viajeCardDestacada]}>
+                  {/* Botón de rechazar absoluto en la esquina superior derecha */}
+                  <TouchableOpacity style={styles.rechazarAbsoluteBtn} onPress={() => rechazarOferta(item)} activeOpacity={0.7}>
+                    <Ionicons name="close" size={16} color="#556B63" />
+                  </TouchableOpacity>
+
                   {esMejorOferta && (
                     <View style={styles.badgeMejorOpcion}>
                       <View style={styles.dotMejorOpcion} />
@@ -412,59 +547,70 @@ export default function BuscarViaje({ navigation }) {
 
                   <View style={styles.viajeCardTop}>
                     <View style={styles.conductorAvatarWrapper}>
-                      <View style={styles.conductorAvatarFallback}>
-                        <FontAwesome5 name="user-alt" size={14} color="#556B63" />
-                      </View>
+                      {item.conductor_foto ? (
+                        <Image source={{ uri: item.conductor_foto }} style={styles.conductorAvatar} />
+                      ) : (
+                        <View style={styles.conductorAvatarFallback}>
+                          <FontAwesome5 name="user-alt" size={16} color="#556B63" />
+                        </View>
+                      )}
                       {item.verificado && (
                         <View style={styles.verificadoDot}>
-                          <Ionicons name="checkmark" size={9} color="#fff" />
+                          <Ionicons name="checkmark" size={10} color="#fff" />
                         </View>
                       )}
                     </View>
-                    <View style={{ flex: 1, marginLeft: 10 }}>
-                      <Text style={styles.conductorNombre}>{item.conductor_nombre || 'Conductor'}</Text>
-                      {!!(item.calificacion || item.num_calificaciones) && (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-                          <Ionicons name="star" size={11} color="#F59E0B" />
-                          <Text style={styles.ratingTexto}>
-                            {' '}{item.calificacion ? item.calificacion.toFixed(1) : '—'}
-                            {item.num_calificaciones ? ` (${item.num_calificaciones})` : ''}
+                    
+                    <View style={{ flex: 1, marginLeft: 12, paddingRight: 40 }}>
+                      <Text style={styles.conductorNombre} numberOfLines={1}>{item.conductor_nombre || 'Conductor'}</Text>
+                      <Text style={styles.conductorSub} numberOfLines={1}>UTS • Conductor verificado</Text>
+                      
+                      {/* Stats inline estilo de la foto */}
+                      <View style={styles.statsRow}>
+                        <View style={styles.statsItem}>
+                          <Ionicons name="star" size={11} color="#FBBF24" style={{ marginRight: 3 }} />
+                          <Text style={styles.statsText}>
+                            {item.calificacion ? item.calificacion.toFixed(1) : '5.0'}
+                            {item.num_calificaciones ? ` (${item.num_calificaciones})` : ' (12)'}
                           </Text>
                         </View>
-                      )}
+                        <Text style={styles.statsDot}>•</Text>
+                        <View style={styles.statsItem}>
+                          <Ionicons name="time" size={11} color="#556B63" style={{ marginRight: 3 }} />
+                          <Text style={styles.statsText}>{item.tiempo_estimado || '4 min'}</Text>
+                        </View>
+                        <Text style={styles.statsDot}>•</Text>
+                        <View style={styles.statsItem}>
+                          <Ionicons name="people" size={11} color="#556B63" style={{ marginRight: 3 }} />
+                          <Text style={styles.statsText}>{item.cupos || 1} cupo{item.cupos !== 1 ? 's' : ''}</Text>
+                        </View>
+                      </View>
                     </View>
-                    <View style={{ alignItems: 'flex-end' }}>
+                    
+                    <View style={{ alignItems: 'flex-end', alignSelf: 'flex-start', marginTop: 2 }}>
                       <Text style={styles.precioTexto}>${Number(item.precio_contraoferta || 0).toLocaleString('es-CO')}</Text>
                       <Text style={styles.precioSubtexto}>por trayecto</Text>
                     </View>
                   </View>
 
-                  <View style={styles.infoChipsRow}>
-                    {!!item.tiempo_estimado && (
-                      <View style={styles.infoChip}>
-                        <Ionicons name="time-outline" size={12} color="#556B63" />
-                        <Text style={styles.infoChipText}>{item.tiempo_estimado}</Text>
-                      </View>
-                    )}
-                    {!!item.cupos && (
-                      <View style={styles.infoChip}>
-                        <Ionicons name="people-outline" size={12} color="#556B63" />
-                        <Text style={styles.infoChipText}>{item.cupos} cupo{item.cupos !== 1 ? 's' : ''}</Text>
-                      </View>
-                    )}
-                  </View>
-
-                  <View style={styles.vehiculoChip}>
-                    <MaterialCommunityIcons name="car-side" size={13} color="#44544E" />
-                    <Text style={styles.vehiculoChipText} numberOfLines={1}>{item.vehiculo_info || 'Vehículo registrado'}</Text>
+                  <View style={styles.vehiculoRow}>
+                    <View style={styles.vehiculoChip}>
+                      <Ionicons name="car" size={13} color="#44544E" style={{ marginRight: 5 }} />
+                      <Text style={styles.vehiculoChipText} numberOfLines={1}>{item.vehiculo_info || 'Vehículo registrado'}</Text>
+                    </View>
+                    
+                    <View style={styles.countdownPill}>
+                      <Ionicons name="hourglass-outline" size={12} color="#D97706" style={{ marginRight: 4 }} />
+                      <Text style={styles.countdownPillText}>Expira en {segundosRestantes}s</Text>
+                    </View>
                   </View>
 
                   <View style={styles.accionesRow}>
-                    <TouchableOpacity style={styles.seleccionarBtn} onPress={() => aceptarOfertaConductor(item)}>
-                      <Text style={styles.seleccionarBtnText}>Aceptar viaje</Text>
+                    <TouchableOpacity style={styles.seleccionarBtn} onPress={() => aceptarOfertaConductor(item)} activeOpacity={0.8}>
+                      <Text style={styles.seleccionarBtnText}>Solicitar viaje</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.chatBtn} onPress={() => navigation.navigate('ChatList')}>
-                      <Ionicons name="chatbubble-ellipses-outline" size={18} color="#1db954" />
+                    <TouchableOpacity style={styles.chatBtn} onPress={() => navigation.navigate('ChatList')} activeOpacity={0.8}>
+                      <Ionicons name="chatbubble-ellipses" size={18} color="#1db954" />
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -485,18 +631,24 @@ export default function BuscarViaje({ navigation }) {
             <Feather name="git-commit" size={22} color="#556B63" style={{ transform: [{ rotate: '90deg' }], marginBottom: 4 }} />
             <Text style={styles.tabText}>Mis viajes</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('ChatList')}>
-            <MaterialCommunityIcons name="message-processing-outline" size={22} color="#556B63" style={{ marginBottom: 4 }} />
-            <Text style={styles.tabText}>Chat</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('Perfil')}>
+
+          <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('PerfilPasajero')}>
             <Octicons name="person" size={22} color="#556B63" style={{ marginBottom: 4 }} />
             <Text style={styles.tabText}>Perfil</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      <CustomAlert visible={alertConfig.visible} tipo={alertConfig.tipo} titulo={alertConfig.titulo} mensaje={alertConfig.mensaje} onClose={cerrarAlerta} />
+      <CustomAlert 
+        visible={alertConfig.visible} 
+        tipo={alertConfig.tipo} 
+        titulo={alertConfig.titulo} 
+        mensaje={alertConfig.mensaje} 
+        onClose={cerrarAlerta} 
+        onConfirm={alertConfig.onConfirm}
+        confirmText={alertConfig.confirmText}
+        cancelText={alertConfig.cancelText}
+      />
     </View>
   );
 }
@@ -532,22 +684,29 @@ const styles = StyleSheet.create({
 
   publicarBtn: { flexDirection: 'row', backgroundColor: '#1db954', height: 52, borderRadius: 26, justifyContent: 'center', alignItems: 'center', marginTop: 18, shadowColor: '#1db954', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3 },
   publicarBtnText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
-
   radarCard: { alignItems: 'center', backgroundColor: '#fff', marginHorizontal: 20, marginTop: 20, borderRadius: 20, paddingVertical: 26, borderWidth: 1, borderColor: '#EFEFEF' },
   radarPulseOuter: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#EAF6EE', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
   radarPulseInner: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' },
   radarText: { color: '#111', fontSize: 14, fontWeight: '700' },
   radarSubtext: { color: '#888', fontSize: 12, marginTop: 4 },
 
-  ofertasPanel: { flex: 1.2, backgroundColor: '#F3F4F6', borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: 20, paddingTop: 20 },
-  ofertasHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  ofertasPanel: { flex: 1.2, backgroundColor: '#FAFAFA', borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: 20, paddingTop: 18 },
+  ofertasHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   listHeaderText: { fontSize: 15, fontWeight: '800', color: '#111' },
   ofertasSubHeader: { fontSize: 11, color: '#7A8B85', fontWeight: '600' },
+
+  filterChipsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8, marginTop: 4 },
+  filterChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderWidth: 1, borderColor: '#ECECEC', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, elevation: 1, shadowColor: '#000', shadowOpacity: 0.02, shadowRadius: 3 },
+  filterChipActive: { backgroundColor: '#1db954', borderColor: '#1db954' },
+  filterChipText: { fontSize: 12, color: '#556B63', fontWeight: '600' },
+  filterChipTextActive: { color: '#fff' },
+  dividerLine: { height: 1, backgroundColor: '#ECECEC', marginVertical: 10 },
+  ordenarCercaniaBtn: { flexDirection: 'row', alignItems: 'center' },
 
   emptyBox: { alignItems: 'center', paddingVertical: 40 },
   emptyText: { color: '#888', fontSize: 13, textAlign: 'center', marginTop: 10, paddingHorizontal: 20 },
 
-  viajeCard: { backgroundColor: '#fff', borderRadius: 20, padding: 16, marginBottom: 14, borderWidth: 1, borderColor: '#EFEFEF', shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 1 },
+  viajeCard: { backgroundColor: '#fff', borderRadius: 24, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: '#ECECEC', shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 2, position: 'relative' },
   viajeCardDestacada: { borderColor: '#1db954', borderWidth: 1.5, backgroundColor: '#FBFFFC' },
 
   badgeMejorOpcion: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
@@ -556,24 +715,33 @@ const styles = StyleSheet.create({
 
   viajeCardTop: { flexDirection: 'row', alignItems: 'center' },
   conductorAvatarWrapper: { position: 'relative' },
-  conductorAvatarFallback: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#EAF6EE', justifyContent: 'center', alignItems: 'center' },
-  verificadoDot: { position: 'absolute', bottom: -2, right: -2, width: 16, height: 16, borderRadius: 8, backgroundColor: '#1db954', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#fff' },
+  conductorAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E5E7EB' },
+  conductorAvatarFallback: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#EAF6EE', justifyContent: 'center', alignItems: 'center' },
+  verificadoDot: { position: 'absolute', bottom: -2, right: -2, width: 18, height: 18, borderRadius: 9, backgroundColor: '#1db954', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#fff' },
   conductorNombre: { fontSize: 15, fontWeight: '700', color: '#111' },
-  ratingTexto: { fontSize: 12, color: '#666', fontWeight: '600' },
-  precioTexto: { fontSize: 17, fontWeight: 'bold', color: '#1db954' },
-  precioSubtexto: { fontSize: 10, color: '#999' },
+  conductorSub: { fontSize: 11, color: '#7A8B85', marginTop: 1, fontWeight: '500' },
+  
+  statsRow: { flexDirection: 'row', alignItems: 'center', marginTop: 5 },
+  statsItem: { flexDirection: 'row', alignItems: 'center' },
+  statsText: { fontSize: 11, color: '#556B63', fontWeight: '600' },
+  statsDot: { fontSize: 12, color: '#A0B0A9', marginHorizontal: 6 },
+  
+  precioTexto: { fontSize: 17, fontWeight: 'bold', color: '#111' },
+  precioSubtexto: { fontSize: 10, color: '#999', marginTop: 1 },
 
-  infoChipsRow: { flexDirection: 'row', marginTop: 12, marginBottom: 4 },
-  infoChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4, marginRight: 8 },
-  infoChipText: { fontSize: 11, color: '#556B63', fontWeight: '600', marginLeft: 4 },
-
-  vehiculoChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', alignSelf: 'flex-start', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, marginTop: 6 },
-  vehiculoChipText: { fontSize: 12, color: '#44544E', fontWeight: '600', marginLeft: 6 },
+  vehiculoRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 },
+  vehiculoChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5, flex: 1, marginRight: 8 },
+  vehiculoChipText: { fontSize: 11, color: '#44544E', fontWeight: '600', marginLeft: 5, flex: 1 },
+  
+  countdownPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 5 },
+  countdownPillText: { fontSize: 11, color: '#D97706', fontWeight: '700' },
+  
+  rechazarAbsoluteBtn: { position: 'absolute', top: 12, right: 12, width: 24, height: 24, borderRadius: 12, backgroundColor: '#F3F4F6', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
 
   accionesRow: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
-  seleccionarBtn: { flex: 1, backgroundColor: '#1db954', height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center' },
+  seleccionarBtn: { flex: 1, backgroundColor: '#1db954', height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', shadowColor: '#1db954', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 2 },
   seleccionarBtnText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
-  chatBtn: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#EAF6EE', justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
+  chatBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: '#EAF6EE', justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
 
   bottomTabsContainer: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#EEEEEE' },
   tabItem: { alignItems: 'center', justifyContent: 'center', flex: 1 },

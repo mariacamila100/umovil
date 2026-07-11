@@ -127,7 +127,7 @@ export default function RegisterScreen({ navigation }) {
         if (rolSeleccionado === 'conductor') {
           navigation.replace('HomeConductor');
         } else {
-          navigation.replace('HomePasajero');
+          navigation.replace('PasajeroTabs');
         }
       });
 

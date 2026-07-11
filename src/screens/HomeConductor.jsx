@@ -3,10 +3,10 @@ import {
   View, Text, StyleSheet, Image, TouchableOpacity, FlatList,
   ActivityIndicator, Platform, TextInput, StatusBar, Keyboard
 } from 'react-native';
-import { Ionicons, MaterialCommunityIcons, FontAwesome5, Octicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, FontAwesome5, Octicons, Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, db } from '../firebase/config';
-import { collection, query, where, onSnapshot, doc, updateDoc, getDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, updateDoc, getDoc, getDocs } from 'firebase/firestore';
 import CustomAlert from '../components/CustomAlert';
 
 export default function HomeConductor({ navigation }) {
@@ -15,6 +15,7 @@ export default function HomeConductor({ navigation }) {
   const [vehiculoData, setVehiculoData] = useState(null);
   const [solicitudesActivas, setSolicitudesActivas] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [viajeActivoId, setViajeActivoId] = useState(null);
 
   // Estado para controlar las contraofertas que digita el conductor por cada tarjeta
   const [preciosContraoferta, setPreciosContraoferta] = useState({}); // { solicitudId: "3500" }
@@ -23,26 +24,46 @@ export default function HomeConductor({ navigation }) {
   const [alertConfig, setAlertConfig] = useState({ visible: false, tipo: 'info', titulo: '', mensaje: '' });
   const mostrarAlerta = (tipo, titulo, mensaje) => setAlertConfig({ visible: true, tipo, titulo, mensaje });
 
-  // ⚠️ Nota: 'f' es el UID de prueba que ya tenías. Lo dejo tal cual para no romper
-  // tus pruebas, pero recuerda quitar ese fallback antes de producción real.
-  const uidConductor = auth.currentUser?.uid || 'f';
+  const uidConductor = auth.currentUser?.uid;
 
   useEffect(() => {
+    if (!auth.currentUser) {
+      navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+      return;
+    }
+
     let unsubSolicitudes = () => {};
+    let unsubViajeActivo = () => {};
 
     const inicializarConductor = async () => {
       try {
+        const uid = auth.currentUser.uid;
         // 1. Cargar datos del conductor
-        const userSnap = await getDoc(doc(db, 'Usuarios', uidConductor));
+        const userSnap = await getDoc(doc(db, 'Usuarios', uid));
         if (userSnap.exists()) {
           const uData = userSnap.data();
           setUserData(uData);
 
-          // 2. Buscar si tiene un vehículo registrado
-          // En producción idealmente harías un query en la colección 'Vehiculo' por usuario_id
-          // Para esta simulación rápida tomamos el ID si existe o buscamos el primer match
-          const vehiculoSnap = await getDoc(doc(db, 'Vehiculo', 'bM07o5H2u9yTkfK1Pyeb'));
-          if (vehiculoSnap.exists()) setVehiculoData(vehiculoSnap.data());
+          // 2. Buscar si tiene un vehículo registrado en la base de datos
+          const vehQuery = query(collection(db, 'Vehiculo'), where('usuario_id', '==', uid));
+          const vehSnap = await getDocs(vehQuery);
+          if (!vehSnap.empty) {
+            setVehiculoData({ id: vehSnap.docs[0].id, ...vehSnap.docs[0].data() });
+          }
+
+          // Escuchar si tiene un viaje activo
+          const qViaje = query(
+            collection(db, 'Viajes'),
+            where('conductor_id', '==', uid),
+            where('estado', '==', 'en_curso')
+          );
+          unsubViajeActivo = onSnapshot(qViaje, (snapshot) => {
+            if (!snapshot.empty) {
+              setViajeActivoId(snapshot.docs[0].id);
+            } else {
+              setViajeActivoId(null);
+            }
+          });
         }
 
         // 3. RADAR EN TIEMPO REAL: Escuchar solicitudes de pasajeros en estado "buscando"
@@ -63,7 +84,20 @@ export default function HomeConductor({ navigation }) {
     };
 
     inicializarConductor();
-    return () => unsubSolicitudes();
+
+    return () => {
+      unsubSolicitudes();
+      unsubViajeActivo();
+    };
+  }, []);
+
+  // Temporizador para refrescar la UI cada segundo y actualizar los conteos regresivos de ofertas
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTick(t => t + 1);
+    }, 1000);
+    return () => clearInterval(interval);
   }, []);
 
   // --- Enviar (o actualizar) una contraoferta a la solicitud del estudiante ---
@@ -92,14 +126,17 @@ export default function HomeConductor({ navigation }) {
       actualizacion[`ofertas_conductores.${uidConductor}`] = {
         conductor_nombre: nombreConductor,
         vehiculo_info: vehiculoInfo,
-        vehiculo_id: 'bM07o5H2u9yTkfK1Pyeb',
+        vehiculo_id: userData?.vehiculo_id || 'bM07o5H2u9yTkfK1Pyeb',
         precio_contraoferta: Number(precioIngresado),
         tiempo_estimado: '4 min',
         estado_oferta: 'pendiente',
+        timestamp_oferta: Date.now(),
         // 🔗 Datos reales que ya existen en tu BD, para que el pasajero los vea en su tarjeta:
         cupos: cuposFinal,
         calificacion: userData?.calificacion_promedio ?? null,
+        num_calificaciones: userData?.num_calificaciones ?? 0,
         verificado: vehiculoData?.verificado ?? false,
+        conductor_foto: userData?.foto_perfil ?? '',
       };
 
       await updateDoc(solicitudRef, actualizacion);
@@ -129,31 +166,87 @@ export default function HomeConductor({ navigation }) {
   const BOTTOM_TABS_HEIGHT = 58 + insets.bottom;
 
   // No mostrar en el radar las solicitudes hechas por el propio conductor
-  // (puede pasar si el mismo usuario de prueba también tiene una Solicitud activa como pasajero)
-  const solicitudesFiltradas = solicitudesActivas.filter((s) => s.pasajero_id !== uidConductor);
+  // o aquellas cuyas ofertas hayan expirado o hayan sido rechazadas hace más de 10 segundos.
+  const TIEMPO_EXPIRACION_MS = 45000;
+  const TIEMPO_GRACIA_MS = 10000;
+
+  const solicitudesFiltradas = solicitudesActivas
+    .filter((s) => s.pasajero_id !== uidConductor)
+    .filter((s) => {
+      const miOferta = s.ofertas_conductores?.[uidConductor];
+      if (!miOferta) return true; // No has ofertado, mostrar en el radar
+
+      const tiempoPasado = Date.now() - (miOferta.timestamp_oferta || 0);
+      const esExpirada = tiempoPasado > TIEMPO_EXPIRACION_MS;
+      const esRechazada = miOferta.estado_oferta === 'rechazada';
+
+      if (esRechazada) {
+        const tiempoRechazo = Date.now() - (miOferta.timestamp_rechazo || 0);
+        return tiempoRechazo < TIEMPO_GRACIA_MS; // Mostrar solo durante los primeros 10s de haber sido rechazada
+      }
+
+      if (esExpirada) {
+        return tiempoPasado < (TIEMPO_EXPIRACION_MS + TIEMPO_GRACIA_MS); // Mostrar solo durante los primeros 10s tras expirar (total < 55s)
+      }
+
+      return true; // Oferta activa, mostrar
+    });
 
   return (
     <View style={styles.mainContainer}>
       <StatusBar barStyle="dark-content" backgroundColor="#fff" />
 
       {/* HEADER DE BIENVENIDA */}
-      <View style={[styles.headerContainer, { paddingTop: insets.top + 8 }]}>
+      <View style={[styles.headerContainer, { paddingTop: insets.top + 16 }]}>
         <View style={styles.userInfoRow}>
           <Image
             source={{ uri: userData?.foto_perfil || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?q=80&w=200' }}
             style={styles.avatar}
           />
           <View style={styles.userTextSpace}>
-            <Text style={styles.welcomeSubtitle}>MODO CONDUCTOR ACTIVO</Text>
-            <Text style={styles.userNameText}>{userData?.nombre || 'Docente/Estudiante'}</Text>
+            <View style={styles.modeBadge}>
+              <MaterialCommunityIcons name="steering" size={12} color="#1db954" style={{ marginRight: 4 }} />
+              <Text style={styles.modeBadgeText}>Conductor Activo</Text>
+            </View>
+            <Text style={styles.userNameText}>{userData?.nombre ? `${userData.nombre} ${userData.apellido || ''}` : 'Conductor UTS'}</Text>
           </View>
         </View>
-
-        <View style={styles.verifiedBadge}>
-          <Ionicons name="car-sport" size={14} color="#1db954" style={{ marginRight: 4 }} />
-          <Text style={styles.verifiedText}>{vehiculoData?.placa || 'Sin Placa'}</Text>
+        <View style={styles.headerRightActions}>
+          {vehiculoData ? (
+            <View style={styles.verifiedBadge}>
+              <Ionicons name="car-sport" size={14} color="#1db954" style={{ marginRight: 4 }} />
+              <Text style={styles.verifiedText}>{vehiculoData.placa}</Text>
+            </View>
+          ) : null}
         </View>
       </View>
+
+      {viajeActivoId ? (
+        <TouchableOpacity
+          style={styles.viajeActivoBanner}
+          activeOpacity={0.9}
+          onPress={() => navigation.navigate('ViajeEnCurso', { viajeId: viajeActivoId })}
+        >
+          <MaterialCommunityIcons name="steering" size={20} color="#1db954" style={{ marginRight: 12 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.viajeActivoBannerText}>Viaje activo como conductor</Text>
+            <Text style={styles.viajeActivoBannerSub}>Toca para abrir el mapa de ruta ➔</Text>
+          </View>
+        </TouchableOpacity>
+      ) : null}
+
+      {!vehiculoData && (
+        <View style={styles.noVehiculoBanner}>
+          <Ionicons name="warning-outline" size={20} color="#D97706" style={{ marginRight: 10 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.noVehiculoTitle}>Falta registro de vehículo</Text>
+            <Text style={styles.noVehiculoText}>Registra tu vehículo para empezar a realizar ofertas.</Text>
+          </View>
+          <TouchableOpacity style={styles.noVehiculoBtn} onPress={() => navigation.navigate('RegistrarVehiculo')} activeOpacity={0.8}>
+            <Text style={styles.noVehiculoBtnText}>Registrar</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* RADAR / LISTADO DE PASAJEROS SOLICITANDO VIAJE */}
       <View style={styles.radarHeaderRow}>
@@ -178,6 +271,15 @@ export default function HomeConductor({ navigation }) {
         }
         renderItem={({ item }) => {
           const miOferta = item.ofertas_conductores?.[uidConductor];
+          const TIEMPO_EXPIRACION_MS = 45000;
+          const tiempoPasado = miOferta ? Date.now() - (miOferta.timestamp_oferta || 0) : 0;
+          const esExpirada = miOferta && (tiempoPasado > TIEMPO_EXPIRACION_MS);
+          const esRechazada = miOferta && miOferta.estado_oferta === 'rechazada';
+          const esActiva = miOferta && !esRechazada && !esExpirada;
+
+          const segundosRestantes = esActiva
+            ? Math.max(0, 45 - Math.floor(tiempoPasado / 1000))
+            : 0;
 
           return (
             <View style={styles.solicitudCard}>
@@ -210,45 +312,82 @@ export default function HomeConductor({ navigation }) {
                 </View>
               </View>
 
-              {/* Si ya ofertaste en esta solicitud, se lo mostramos en vez de dejarte "a ciegas" */}
-              {miOferta && (
+              {/* Si ya ofertaste y está activa, mostramos el conteo regresivo */}
+              {esActiva && (
                 <View style={styles.yaOfertasteBox}>
-                  <Ionicons name="checkmark-circle" size={14} color="#1db954" />
+                  <Ionicons name="time-outline" size={14} color="#1db954" style={{ marginRight: 6 }} />
                   <Text style={styles.yaOfertasteTexto}>
-                    Ya ofertaste ${Number(miOferta.precio_contraoferta).toLocaleString('es-CO')} · Esperando respuesta
+                    Ya ofertaste ${Number(miOferta.precio_contraoferta).toLocaleString('es-CO')} · Esperando respuesta ({segundosRestantes}s)
                   </Text>
                 </View>
               )}
 
-              {/* Formulario de Contraoferta */}
-              <View style={styles.contraofertaRow}>
-                <View style={styles.inputContainerPrecio}>
-                  <Text style={styles.signoPesos}>$</Text>
-                  <TextInput
-                    style={styles.precioInput}
-                    placeholder="Tu tarifa"
-                    placeholderTextColor="#999"
-                    keyboardType="numeric"
-                    value={preciosContraoferta[item.id] || ''}
-                    onChangeText={(txt) => handlePrecioChange(item.id, txt)}
-                  />
-                </View>
-                <View style={styles.inputContainerCupos}>
-                  <Ionicons name="people-outline" size={14} color="#556B63" style={{ marginRight: 4 }} />
-                  <TextInput
-                    style={styles.cuposInput}
-                    placeholder="1"
-                    placeholderTextColor="#999"
-                    keyboardType="numeric"
-                    value={cuposContraoferta[item.id] || ''}
-                    onChangeText={(txt) => handleCuposChange(item.id, txt)}
-                  />
-                </View>
-              </View>
+              {/* Si la oferta no está activa (por rechazo, expiración, o nunca se ha ofertado) */}
+              {!esActiva && (
+                <>
+                  {esRechazada && (
+                    <View style={styles.rechazadaBox}>
+                      <Ionicons name="close-circle-outline" size={14} color="#EF4444" style={{ marginRight: 6 }} />
+                      <Text style={styles.rechazadaTexto}>
+                        Tu oferta de ${Number(miOferta.precio_contraoferta).toLocaleString('es-CO')} fue rechazada
+                      </Text>
+                    </View>
+                  )}
 
-              <TouchableOpacity style={styles.enviarOfertaBtn} onPress={() => enviarContraoferta(item.id)}>
-                <Text style={styles.enviarOfertaBtnText}>{miOferta ? 'Actualizar oferta' : 'Enviar oferta'}</Text>
-              </TouchableOpacity>
+                  {esExpirada && !esRechazada && (
+                    <View style={styles.expiradaBox}>
+                      <Ionicons name="alert-circle-outline" size={14} color="#D97706" style={{ marginRight: 6 }} />
+                      <Text style={styles.expiradaTexto}>
+                        Tu oferta de ${Number(miOferta.precio_contraoferta).toLocaleString('es-CO')} expiró
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Formulario de Contraoferta */}
+                  <View style={styles.contraofertaRow}>
+                    <View style={[styles.inputContainerPrecio, !vehiculoData && styles.disabledInputContainer]}>
+                      <Text style={styles.signoPesos}>$</Text>
+                      <TextInput
+                        style={[styles.precioInput, !vehiculoData && styles.disabledInput]}
+                        placeholder="Tu tarifa"
+                        placeholderTextColor="#999"
+                        keyboardType="numeric"
+                        value={preciosContraoferta[item.id] || ''}
+                        onChangeText={(txt) => handlePrecioChange(item.id, txt)}
+                        editable={!!vehiculoData}
+                      />
+                    </View>
+                    <View style={[styles.inputContainerCupos, !vehiculoData && styles.disabledInputContainer]}>
+                      <Ionicons name="people-outline" size={14} color="#556B63" style={{ marginRight: 4 }} />
+                      <TextInput
+                        style={[styles.cuposInput, !vehiculoData && styles.disabledInput]}
+                        placeholder="1"
+                        placeholderTextColor="#999"
+                        keyboardType="numeric"
+                        value={cuposContraoferta[item.id] || ''}
+                        onChangeText={(txt) => handleCuposChange(item.id, txt)}
+                        editable={!!vehiculoData}
+                      />
+                    </View>
+                  </View>
+
+                  <TouchableOpacity 
+                    style={[styles.enviarOfertaBtn, !vehiculoData && styles.enviarOfertaBtnDisabled]} 
+                    onPress={() => {
+                      if (!vehiculoData) {
+                        mostrarAlerta('warning', 'Vehículo requerido', 'Debes registrar tu vehículo antes de realizar ofertas de viaje.');
+                      } else {
+                        enviarContraoferta(item.id);
+                      }
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.enviarOfertaBtnText}>
+                      {miOferta ? 'Volver a ofertar' : 'Enviar oferta'}
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           );
         }}
@@ -263,9 +402,9 @@ export default function HomeConductor({ navigation }) {
           <Text style={[styles.tabText, styles.activeTabText]}>Radar</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('HomePasajero')}>
-          <MaterialCommunityIcons name="account-switch-outline" size={22} color="#556B63" style={{ marginBottom: 4 }} />
-          <Text style={styles.tabText}>Modo Pasajero</Text>
+        <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('MisViajes', { role: 'conductor' })}>
+          <Feather name="git-commit" size={22} color="#556B63" style={{ transform: [{ rotate: '90deg' }], marginBottom: 4 }} />
+          <Text style={styles.tabText}>Mis viajes</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('PerfilConductor')}>
@@ -282,14 +421,44 @@ export default function HomeConductor({ navigation }) {
 const styles = StyleSheet.create({
   mainContainer: { flex: 1, backgroundColor: '#FAFAFA' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
-  headerContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 16, backgroundColor: '#fff' },
+  headerContainer: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    paddingHorizontal: 20, 
+    paddingBottom: 16, 
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+  },
   userInfoRow: { flexDirection: 'row', alignItems: 'center' },
-  avatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#E5E7EB' },
-  userTextSpace: { marginLeft: 10 },
-  welcomeSubtitle: { fontSize: 10, color: '#1db954', fontWeight: '800', letterSpacing: 0.5 },
-  userNameText: { fontSize: 17, fontWeight: 'bold', color: '#111', marginTop: 2 },
+  avatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#E5E7EB', borderWidth: 2, borderColor: '#EAF6EE' },
+  userTextSpace: { marginLeft: 12 },
+  modeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EAF6EE',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+    marginBottom: 4,
+  },
+  modeBadgeText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#1db954',
+    textTransform: 'uppercase',
+  },
+  userNameText: { fontSize: 16, fontWeight: 'bold', color: '#111' },
   verifiedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E8F5E9', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14 },
   verifiedText: { fontSize: 12, color: '#1db954', fontWeight: '700' },
+  headerRightActions: { flexDirection: 'row', alignItems: 'center' },
 
   radarHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginTop: 18, marginBottom: 14 },
   radarPulseDot: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#E8F5E9', justifyContent: 'center', alignItems: 'center', marginRight: 8 },
@@ -322,6 +491,11 @@ const styles = StyleSheet.create({
   yaOfertasteBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EAF6EE', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10, marginTop: 14 },
   yaOfertasteTexto: { fontSize: 12, color: '#1db954', fontWeight: '600', marginLeft: 6, flex: 1 },
 
+  rechazadaBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEE2E2', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10, marginTop: 14 },
+  rechazadaTexto: { fontSize: 12, color: '#EF4444', fontWeight: '600', marginLeft: 6, flex: 1 },
+  expiradaBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10, marginTop: 14 },
+  expiradaTexto: { fontSize: 12, color: '#D97706', fontWeight: '600', marginLeft: 6, flex: 1 },
+
   contraofertaRow: { flexDirection: 'row', marginTop: 14 },
   inputContainerPrecio: { flex: 1.4, flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', height: 44, borderRadius: 12, paddingHorizontal: 12, marginRight: 8 },
   inputContainerCupos: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', height: 44, borderRadius: 12, paddingHorizontal: 12 },
@@ -336,5 +510,54 @@ const styles = StyleSheet.create({
   tabItem: { alignItems: 'center', justifyContent: 'center', flex: 1 },
   activeTabIconBg: { width: 48, height: 32, borderRadius: 16, backgroundColor: '#D1EFE0', justifyContent: 'center', alignItems: 'center', marginBottom: 4 },
   tabText: { fontSize: 11, color: '#556B63', fontWeight: '500' },
-  activeTabText: { color: '#1db954', fontWeight: '700' }
+  activeTabText: { color: '#1db954', fontWeight: '700' },
+  viajeActivoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EAF6EE', // verde suave premium
+    borderWidth: 1.5,
+    borderColor: '#D1EFE0',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginHorizontal: 20,
+    marginTop: 15,
+    marginBottom: 5,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  viajeActivoBannerText: {
+    color: '#1E4620',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  viajeActivoBannerSub: {
+    color: '#446A46',
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  noVehiculoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+    borderWidth: 1.5,
+    borderRadius: 16,
+    padding: 14,
+    marginHorizontal: 20,
+    marginTop: 15,
+    marginBottom: 5,
+  },
+  noVehiculoTitle: { fontSize: 13, fontWeight: '700', color: '#B45309' },
+  noVehiculoText: { fontSize: 11, color: '#D97706', marginTop: 2, lineHeight: 14, pr: 8 },
+  noVehiculoBtn: { backgroundColor: '#D97706', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, marginLeft: 8 },
+  noVehiculoBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+
+  disabledInputContainer: { backgroundColor: '#E5E7EB', opacity: 0.6 },
+  disabledInput: { color: '#777' },
+  enviarOfertaBtnDisabled: { backgroundColor: '#A1A1AA', shadowColor: 'transparent', elevation: 0 },
 });

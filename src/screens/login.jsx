@@ -111,7 +111,7 @@ export default function LoginScreen({ navigation }) {
         if (datosUsuario.rol && datosUsuario.rol.includes('conductor')) {
           navigation.replace('HomeConductor');
         } else {
-          navigation.replace('HomePasajero');
+          navigation.replace('PasajeroTabs');
         }
       });
 

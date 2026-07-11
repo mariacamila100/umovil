@@ -13,14 +13,20 @@ import RegisterScreen from '../screens/register';
 import HomePasajero from '../screens/HomePasajero';
 import PerfilPasajero from '../screens/PerfilPasajero';
 import PerfilConductor from '../screens/PerfilConductor';
+import MisViajes from '../screens/MisViajes';
 
 // Otras pantallas secundarias
 import HomeConductor from '../screens/HomeConductor';
 import BuscarViaje from '../screens/BuscarViaje';
 import ViajeEnCurso from '../screens/ViajeEnCurso';
+import RegistrarVehiculo from '../screens/RegistrarVehiculo';
+import ChatViaje from '../screens/ChatViaje';
+import CalificarViaje from '../screens/CalificarViaje';
+import DetalleViaje from '../screens/DetalleViaje';
+
+
 
 // Componentes vacíos temporales por si no tienes creadas aún estas vistas
-const MisViajesPlaceholder = () => <View style={{flex:1, justifyContent:'center', alignItems:'center'}}><Text>Mis Viajes</Text></View>;
 const ChatListPlaceholder = () => <View style={{flex:1, justifyContent:'center', alignItems:'center'}}><Text>Chats</Text></View>;
 
 const Stack = createStackNavigator();
@@ -59,20 +65,13 @@ function PasajeroTabs() {
       />
       <Tab.Screen 
         name="MisViajes" 
-        component={MisViajesPlaceholder} // Reemplaza por tu pantalla real 'MisViajes' cuando la tengas
+        component={MisViajes} 
         options={{
           tabBarLabel: 'Mis viajes',
           tabBarIcon: ({ color }) => <Feather name="git-commit" size={22} color={color} style={{ transform: [{ rotate: '90deg' }] }} />
         }}
       />
-      <Tab.Screen 
-        name="ChatList" 
-        component={ChatListPlaceholder} // Reemplaza por tu pantalla real 'ChatList' cuando la tengas
-        options={{
-          tabBarLabel: 'Chat',
-          tabBarIcon: ({ color }) => <MaterialCommunityIcons name="message-processing-outline" size={22} color={color} />
-        }}
-      />
+
       <Tab.Screen 
         name="PerfilPasajero" 
         component={PerfilPasajero} 
@@ -107,12 +106,17 @@ export default function AppNavigator() {
       {/* Otras pantallas que no pertenecen a las pestañas directas */}
       <Stack.Screen name="HomePasajero" component={HomePasajero} />
       <Stack.Screen name="PerfilPasajero" component={PerfilPasajero} />
-      <Stack.Screen name="MisViajes" component={MisViajesPlaceholder} />
+      <Stack.Screen name="MisViajes" component={MisViajes} />
       <Stack.Screen name="ChatList" component={ChatListPlaceholder} />
       <Stack.Screen name="HomeConductor" component={HomeConductor} />
       <Stack.Screen name="BuscarViaje" component={BuscarViaje} />
       <Stack.Screen name="ViajeEnCurso" component={ViajeEnCurso} />
+      <Stack.Screen name="ChatViaje" component={ChatViaje} />
+      <Stack.Screen name="CalificarViaje" component={CalificarViaje} />
       <Stack.Screen name="PerfilConductor" component={PerfilConductor} />
+      <Stack.Screen name="DetalleViaje" component={DetalleViaje} />
+
+      <Stack.Screen name="RegistrarVehiculo" component={RegistrarVehiculo} />
     </Stack.Navigator>
   );
 }

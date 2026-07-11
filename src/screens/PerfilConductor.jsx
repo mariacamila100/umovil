@@ -6,6 +6,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons, Octicons, Feather } from '@expo/vector-icons';
 import { auth, db } from '../firebase/config';
+import { signOut } from 'firebase/auth';
 import { doc, getDoc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore';
 
 import CustomAlert from '../components/CustomAlert';
@@ -31,10 +32,22 @@ export default function PerfilConductor({ navigation }) {
     const [alertConfig, setAlertConfig] = useState({ visible: false, tipo: 'info', titulo: '', mensaje: '' });
     const showAlert = (tipo, titulo, mensaje) => setAlertConfig({ visible: true, tipo, titulo, mensaje });
 
+    const handleCerrarSesion = async () => {
+        try {
+            await signOut(auth);
+            navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        } catch (error) {
+            console.error("Error al cerrar sesión:", error);
+        }
+    };
+
     useEffect(() => {
         const fetchPerfilConductor = async () => {
             try {
-                if (!auth.currentUser) return;
+                if (!auth.currentUser) {
+                    navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+                    return;
+                }
                 const uid = auth.currentUser.uid;
 
                 // 1. Datos del usuario
@@ -181,9 +194,14 @@ export default function PerfilConductor({ navigation }) {
                         </TouchableOpacity>
                     </View>
                 ) : (
-                    <TouchableOpacity style={styles.settingsBtn} onPress={() => setIsEditing(true)}>
-                        <Ionicons name="create-outline" size={22} color="#333" />
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity style={[styles.settingsBtn, { marginRight: 8 }]} onPress={() => setIsEditing(true)}>
+                            <Ionicons name="create-outline" size={22} color="#333" />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.logoutBtn} onPress={handleCerrarSesion}>
+                            <Ionicons name="log-out-outline" size={20} color="#D32F2F" />
+                        </TouchableOpacity>
+                    </View>
                 )}
             </View>
 
@@ -363,19 +381,19 @@ export default function PerfilConductor({ navigation }) {
 
             </ScrollView>
 
-            {/* BARRA INFERIOR: misma del modo conductor (Radar / Modo Pasajero / Mi Perfil) */}
+            {/* BARRA INFERIOR: misma del modo conductor (Radar / Mis viajes / Mi Perfil) */}
             <View style={[
                 styles.bottomTabsContainer,
                 { paddingBottom: insets.bottom > 0 ? insets.bottom : 10, height: insets.bottom > 0 ? 65 + insets.bottom : 65 }
             ]}>
                 <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('HomeConductor')}>
-                    <Ionicons name="radar-outline" size={22} color="#556B63" style={{ marginBottom: 4 }} />
+                    <Ionicons name="car-sport-outline" size={22} color="#556B63" style={{ marginBottom: 4 }} />
                     <Text style={styles.tabText}>Radar</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('HomePasajero')}>
-                    <MaterialCommunityIcons name="account-switch-outline" size={22} color="#556B63" style={{ marginBottom: 4 }} />
-                    <Text style={styles.tabText}>Modo Pasajero</Text>
+                <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('MisViajes', { role: 'conductor' })}>
+                    <Feather name="git-commit" size={22} color="#556B63" style={{ transform: [{ rotate: '90deg' }], marginBottom: 4 }} />
+                    <Text style={styles.tabText}>Mis viajes</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity style={styles.tabItem}>
@@ -406,6 +424,7 @@ const styles = StyleSheet.create({
     headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#111', flex: 1, marginRight: 10 },
     headerActions: { flexDirection: 'row', alignItems: 'center' },
     settingsBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' },
+    logoutBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFEBEE' },
     actionBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
 
     profileCard: { flexDirection: 'row', alignItems: 'center', marginVertical: 15, backgroundColor: '#fff', padding: 15, borderRadius: 20, borderWidth: 1, borderColor: '#F0F0F0' },

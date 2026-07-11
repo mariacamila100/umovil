@@ -6,6 +6,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons, Octicons, Feather } from '@expo/vector-icons';
 import { auth, db } from '../firebase/config';
+import { signOut } from 'firebase/auth';
 import { doc, getDoc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore';
 
 // 1. Importar el componente CustomAlert desde la ruta relativa correspondiente
@@ -37,7 +38,10 @@ export default function PerfilPasajero({ navigation }) {
     useEffect(() => {
         const fetchPerfilData = async () => {
             try {
-                if (!auth.currentUser) return;
+                if (!auth.currentUser) {
+                    navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+                    return;
+                }
                 const uid = auth.currentUser.uid;
 
                 const userDoc = await getDoc(doc(db, 'Usuarios', uid));
@@ -91,6 +95,15 @@ export default function PerfilPasajero({ navigation }) {
             titulo,
             mensaje
         });
+    };
+
+    const handleCerrarSesion = async () => {
+        try {
+            await signOut(auth);
+            navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        } catch (error) {
+            console.error("Error al cerrar sesión:", error);
+        }
     };
 
     const handleGuardarCambios = async () => {
@@ -172,9 +185,14 @@ export default function PerfilPasajero({ navigation }) {
                         </TouchableOpacity>
                     </View>
                 ) : (
-                    <TouchableOpacity style={styles.settingsBtn} onPress={() => setIsEditing(true)}>
-                        <Ionicons name="create-outline" size={22} color="#333" />
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity style={[styles.settingsBtn, { marginRight: 8 }]} onPress={() => setIsEditing(true)}>
+                            <Ionicons name="create-outline" size={22} color="#333" />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.logoutBtn} onPress={handleCerrarSesion}>
+                            <Ionicons name="log-out-outline" size={20} color="#D32F2F" />
+                        </TouchableOpacity>
+                    </View>
                 )}
             </View>
 
@@ -311,36 +329,6 @@ export default function PerfilPasajero({ navigation }) {
 
             </ScrollView>
 
-            {/* BOTTOM TABS GLOBAL VISUAL CON ÁREA SEGURA DINÁMICA */}
-            <View style={[
-                styles.bottomTabsContainer,
-                { 
-                    paddingBottom: insets.bottom > 0 ? insets.bottom : 10, 
-                    height: insets.bottom > 0 ? 65 + insets.bottom : 65 
-                }
-            ]}>
-                <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('HomePasajero')}>
-                    <Octicons name="home" size={22} color="#556B63" style={{ marginBottom: 4 }} />
-                    <Text style={styles.tabText}>Inicio</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('MisViajes')}>
-                    <Feather name="git-commit" size={22} color="#556B63" style={{ transform: [{ rotate: '90deg' }], marginBottom: 4 }} />
-                    <Text style={styles.tabText}>Mis viajes</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('ChatList')}>
-                    <MaterialCommunityIcons name="message-processing-outline" size={22} color="#556B63" style={{ marginBottom: 4 }} />
-                    <Text style={styles.tabText}>Chat</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.tabItem}>
-                    <View style={styles.activeTabIconBg}>
-                        <Octicons name="person" size={20} color="#000" />
-                    </View>
-                    <Text style={[styles.tabText, styles.activeTabText]}>Perfil</Text>
-                </TouchableOpacity>
-            </View>
             {/* 4. RENDERIZADO DEL COMPONENTE PERSONALIZADO */}
             <CustomAlert
                 visible={alertConfig.visible}
@@ -362,6 +350,7 @@ const styles = StyleSheet.create({
     headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#111' },
     headerActions: { flexDirection: 'row', alignItems: 'center' },
     settingsBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' },
+    logoutBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFEBEE' },
     actionBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
 
     profileCard: { flexDirection: 'row', alignItems: 'center', marginVertical: 15, backgroundColor: '#fff', padding: 15, borderRadius: 20, borderWidth: 1, borderColor: '#F0F0F0' },
@@ -407,37 +396,4 @@ const styles = StyleSheet.create({
     historyPriceSpace: { alignItems: 'flex-end' },
     historyPriceText: { fontSize: 14, fontWeight: 'bold', color: '#333' },
     miniStarsRow: { flexDirection: 'row', marginTop: 4 },
-
-    // BARRA INFERIOR REFORMADA
-    bottomTabsContainer: { 
-        backgroundColor: '#fff', 
-        flexDirection: 'row', 
-        justifyContent: 'space-around', 
-        alignItems: 'center', 
-        borderTopWidth: 1, 
-        borderTopColor: '#EEEEEE',
-    },
-    tabItem: { 
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        flex: 1 
-    },
-    activeTabIconBg: { 
-        width: 48, 
-        height: 32, 
-        borderRadius: 16, 
-        backgroundColor: '#D1EFE0', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        marginBottom: 4 
-    },
-    tabText: { 
-        fontSize: 12, 
-        color: '#556B63', 
-        fontWeight: '500' 
-    },
-    activeTabText: { 
-        color: '#1db954', 
-        fontWeight: '700' 
-    }
 });

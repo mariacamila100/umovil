@@ -1,14 +1,15 @@
 import React from 'react';
-import { Modal, View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
+import { Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-export default function CustomAlert({ visible, tipo, titulo, mensaje, onClose }) {
-  // Configuración de íconos y colores según el tipo de alerta
+export default function CustomAlert({ visible, tipo, titulo, mensaje, onClose, onConfirm, confirmText, cancelText }) {
+  // colores de los mensaje de alerta deUmóvil
   const config = {
-    exito: { icono: 'checkmark-circle', color: '#16A34A', fondo: '#DCFCE7' },
-    error: { icono: 'close-circle', color: '#DC2626', fondo: '#FEE2E2' },
-    info: { icono: 'information-circle', color: '#2563EB', fondo: '#DBEAFE' }
-  }[tipo] || { icono: 'information-circle', color: '#16A34A', fondo: '#DCFCE7' };
+    exito: { icono: 'checkmark-circle-outline', color: '#1db954', fondo: '#EAF6EE' },
+    error: { icono: 'close-circle-outline', color: '#E11D48', fondo: '#FFF1F2' },
+    info: { icono: 'information-circle-outline', color: '#556B63', fondo: '#F4F6F5' },
+    warning: { icono: 'alert-circle-outline', color: '#D97706', fondo: '#FFFBEB' }
+  }[tipo] || { icono: 'information-circle-outline', color: '#1db954', fondo: '#EAF6EE' };
 
   return (
     <Modal visible={visible} transparent animationType="fade">
@@ -18,18 +19,37 @@ export default function CustomAlert({ visible, tipo, titulo, mensaje, onClose })
           <View style={[styles.iconCircle, { backgroundColor: config.fondo }]}>
             <Ionicons name={config.icono} size={40} color={config.color} />
           </View>
-          
+
           {/* Textos */}
           <Text style={styles.title}>{titulo}</Text>
           <Text style={styles.message}>{mensaje}</Text>
-          
-          {/* Botón de Cierre */}
-          <TouchableOpacity 
-            style={[styles.button, { backgroundColor: config.color }]} 
-            onPress={onClose}
-          >
-            <Text style={styles.buttonText}>Entendido</Text>
-          </TouchableOpacity>
+
+          {/* Botones de Cierre / Acción */}
+          {onConfirm ? (
+            <View style={styles.actionButtonsRow}>
+              <TouchableOpacity
+                style={[styles.confirmButton, { backgroundColor: config.color }]}
+                onPress={() => {
+                  onConfirm();
+                }}
+              >
+                <Text style={styles.buttonText}>{confirmText || 'Sí, salir'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={onClose}
+              >
+                <Text style={styles.cancelButtonText}>{cancelText || 'Cancelar'}</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.button, { backgroundColor: config.color }]}
+              onPress={onClose}
+            >
+              <Text style={styles.buttonText}>Entendido</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Modal>
@@ -88,6 +108,36 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     color: '#fff',
+    fontSize: 15,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  actionButtonsRow: {
+    flexDirection: 'row-reverse',
+    width: '100%',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  confirmButton: {
+    flex: 1,
+    height: 46,
+    borderRadius: 23,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  cancelButton: {
+    flex: 1,
+    height: 46,
+    borderRadius: 23,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#D1D5DB',
+    marginRight: 8,
+  },
+  cancelButtonText: {
+    color: '#4B5563',
     fontSize: 15,
     fontWeight: 'bold',
   },

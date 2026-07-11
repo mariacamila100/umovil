@@ -6,7 +6,7 @@ import {
 import { Ionicons, MaterialCommunityIcons, Feather, Octicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { auth, db } from '../firebase/config';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 
 // Importación condicional robusta para evitar errores de compilación en el Navegador Web
 let MapView, Marker;
@@ -19,6 +19,7 @@ if (Platform.OS !== 'web') {
 export default function HomePasajero({ navigation }) {
   const [userData, setUserData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [viajeActivoId, setViajeActivoId] = useState(null);
 
   // Estados para la ubicación (En Web se mantendrá en null/simulado, en móvil capturará GPS)
   const [location, setLocation] = useState(null);
@@ -30,15 +31,35 @@ export default function HomePasajero({ navigation }) {
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
+    let unsubViajes = () => {};
+
     const initializeHome = async () => {
       try {
-        // 1. Cargar datos del estudiante desde Firestore
-        if (auth.currentUser) {
-          const userDoc = await getDoc(doc(db, 'Usuarios', auth.currentUser.uid));
-          if (userDoc.exists()) {
-            setUserData(userDoc.data());
-          }
+        if (!auth.currentUser) {
+          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+          return;
         }
+        const uid = auth.currentUser.uid;
+
+        // 1. Cargar datos del estudiante desde Firestore
+        const userDoc = await getDoc(doc(db, 'Usuarios', uid));
+        if (userDoc.exists()) {
+          setUserData(userDoc.data());
+        }
+
+        // Escuchar viajes activos
+        const qViaje = query(
+          collection(db, 'Viajes'),
+          where('pasajero_id', '==', uid),
+          where('estado', '==', 'en_curso')
+        );
+        unsubViajes = onSnapshot(qViaje, (snapshot) => {
+          if (!snapshot.empty) {
+            setViajeActivoId(snapshot.docs[0].id);
+          } else {
+            setViajeActivoId(null);
+          }
+        });
 
         // 2. Controlar ubicación según la plataforma
         if (Platform.OS !== 'web') {
@@ -67,6 +88,10 @@ export default function HomePasajero({ navigation }) {
     };
 
     initializeHome();
+
+    return () => {
+      unsubViajes();
+    };
   }, []);
 
   if (loading) {
@@ -107,6 +132,20 @@ export default function HomePasajero({ navigation }) {
           </View>
         </View>
       </View>
+
+      {viajeActivoId ? (
+        <TouchableOpacity
+          style={styles.viajeActivoBanner}
+          activeOpacity={0.9}
+          onPress={() => navigation.navigate('ViajeEnCurso', { viajeId: viajeActivoId })}
+        >
+          <Ionicons name="car-sport" size={20} color="#1db954" style={{ marginRight: 12 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.viajeActivoBannerText}>Viaje activo en curso</Text>
+            <Text style={styles.viajeActivoBannerSub}>Toca para ver la ruta y el chat ➔</Text>
+          </View>
+        </TouchableOpacity>
+      ) : null}
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -206,31 +245,6 @@ export default function HomePasajero({ navigation }) {
         </View>
 
       </ScrollView>
-
-      {/* 5. BARRA DE NAVEGACIÓN INFERIOR (respeta el home indicator / barra de gestos) */}
-      <View style={[styles.bottomTabsContainer, { height: BOTTOM_TABS_HEIGHT, paddingBottom: insets.bottom }]}>
-        <TouchableOpacity style={styles.tabItem}>
-          <View style={styles.activeTabIconBg}>
-            <Octicons name="home" size={20} color="#000" />
-          </View>
-          <Text style={[styles.tabText, styles.activeTabText]}>Inicio</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('MisViajes')}>
-          <Feather name="git-commit" size={22} color="#556B63" style={{ transform: [{ rotate: '90deg' }], marginBottom: 4 }} />
-          <Text style={styles.tabText}>Mis viajes</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('ChatList')}>
-          <MaterialCommunityIcons name="message-processing-outline" size={22} color="#556B63" style={{ marginBottom: 4 }} />
-          <Text style={styles.tabText}>Chat</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.tabItem} onPress={() => navigation.navigate('PerfilPasajero')}>
-          <Octicons name="person" size={22} color="#556B63" style={{ marginBottom: 4 }} />
-          <Text style={styles.tabText}>Perfil</Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }
@@ -284,9 +298,33 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 13, color: '#333', fontWeight: '500' },
 
   // Bottom Tabs Estilo Minimalista Exacto (alto y paddingBottom ahora se calculan dinámicamente arriba)
-  bottomTabsContainer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#fff', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#EEEEEE' },
-  tabItem: { alignItems: 'center', justifyContent: 'center', flex: 1 },
-  activeTabIconBg: { width: 48, height: 32, borderRadius: 16, backgroundColor: '#D1EFE0', justifyContent: 'center', alignItems: 'center', marginBottom: 4 },
-  tabText: { fontSize: 12, color: '#556B63', fontWeight: '500' },
-  activeTabText: { color: '#1db954', fontWeight: '700' }
+  viajeActivoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EAF6EE', // verde suave premium
+    borderWidth: 1.5,
+    borderColor: '#D1EFE0',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginHorizontal: 20,
+    marginTop: 15,
+    marginBottom: 5,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  viajeActivoBannerText: {
+    color: '#1E4620',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  viajeActivoBannerSub: {
+    color: '#446A46',
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: '500',
+  }
 });
